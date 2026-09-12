@@ -1,0 +1,32 @@
+[Unit]
+Description=carlogd - ket noi mang + gui log xe thi dau ve database
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+# Chay bang user rieng "carlog", KHONG phai user cua thi sinh (vd "pilot") -
+# day la hang rao chinh de thi sinh (co SSH/co the ca sudo giu hang) khong
+# tu y sua/tat dich vu nay. Xem provision/README.md muc "Tach user Linux".
+User=carlog
+Group=carlog
+WorkingDirectory=/opt/carlogd
+ExecStart=/usr/bin/python3 /opt/carlogd/carlogd.py
+Restart=always
+RestartSec=2
+
+# Thu muc trang thai (STATE_FILE) va socket dieu khien (CONTROL_SOCKET) -
+# systemd tu tao va don khi dich vu dung, dat quyen dung tu dau.
+RuntimeDirectory=carlogd
+RuntimeDirectoryMode=0770
+StateDirectory=carlogd
+StateDirectoryMode=0770
+
+# Gioi han - carlogd khong can quyen root, khong can ghi ngoai 2 thu muc
+# tren, giam thiet hai neu bi khai thac lo hong tu du lieu thi sinh gui vao.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/carlogd /run/carlogd
+
+[Install]
+WantedBy=multi-user.target
