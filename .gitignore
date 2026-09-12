@@ -1,0 +1,13 @@
+# File trang thai runtime cua carlogd khi chay demo tren Windows (xem
+# run_carlogd_demo.ps1) - tu sinh, doi lien tuc (next_seq tang moi ~10ms luc
+# co lượt chay), khong phai code, khong nen commit.
+pi-daemon/_demo_state/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Chinh sua tren nhieu he dieu hanh
+.DS_Store
+Thumbs.db

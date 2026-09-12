@@ -1,25 +1,72 @@
-# hackathon-chip-logic — firmware xe thi đấu
+## Kiến trúc tổng quan
 
-> ⚠️ **CẬP NHẬT**: phần cứng thật là **Raspberry Pi** (không phải ESP32), và
-> **thí sinh SSH vào chip để tự viết code lái/AI** — ban tổ chức chỉ cần chuẩn
-> bị đúng phần "kết nối mạng + gửi log đúng định dạng DB". Kiến trúc đúng cho
-> trường hợp này nằm ở **[`pi-daemon/`](pi-daemon/README.md) — đọc từ đó
-> trước**. Toàn bộ nội dung bên dưới (`main/`, `test/`, `wokwi/`) là bản làm
-> cho ESP32/FreeRTOS trước khi biết rõ yêu cầu, giữ lại làm tài liệu tham
-> khảo (phòng khi có đội tự dùng thêm ESP32 làm module phụ), không phải thứ
-> cần dùng cho Raspberry Pi.
+```
+[code thi sinh - bat ky ngon ngu]
+        |  UDP JSON toi 127.0.0.1:8765 (chi gui ket qua AI: speed/steering/lane/obstacle/confidence)
+        v
+   carlogd.py  <-- systemd service, chay duoi user rieng "carlog"
+        |            (thi sinh KHONG co quyen doc/sua/tat - xem pi-daemon/provision/README.md)
+        |  tu dien: run_id, team_id, sequence_no, car_timestamp (da dong bo NTP)
+        |  nhip CO DINH 10ms, dung dung protocol.py cua du an server
+        v
+  ingest_server.py -> Postgres -> hackathon-backend (Spring Boot) -> hackathon-frontend (dashboard)
+```
 
-Logic chạy trên **con chip gắn trên xe** (không phải server). Đây là phần còn thiếu
-trong bộ ba `Car/simulator` (mô phỏng UDP, dùng khi chưa có xe thật) → `hackathon-backend`
-(quản trị, JWT, RADIUS) → `hackathon-frontend` (dashboard). Thư mục này thay thế
-`car_simulator.py` bằng firmware thật, phải **tương thích 100% giao thức** mà
-`Car/simulator/protocol.py` và `ingest_server.py` đã định nghĩa, đồng thời **không được
-làm sai lệch kết quả cuộc thi**.
+Repo liên quan (không nằm trong repo này):
 
-## 1. Vì sao chọn C/C++ trên ESP-IDF (FreeRTOS), không phải Python/Node/Arduino thuần
+| Repo | Vai trò |
+| --- | --- |
+| `hackathon-server/Car/simulator` | `protocol.py` (schema gói tin gốc) + `ingest_server.py` (nhận UDP, ghi DB) |
+| `hackathon-server/hackathon-backend` | API/WebSocket (Spring Boot), xác thực, quản trị đội/lượt chạy |
+| `hackathon-server/hackathon-frontend` | Dashboard "Pit Wall" cho giám khảo (đóng gói thành `.exe` Electron) |
+
+## 3 loại tài khoản khác nhau — không dùng lẫn
+
+| Tài khoản | Ai/cái gì dùng | Dùng để làm gì |
+| --- | --- | --- |
+| `teams.username` + `nt_hash` | Xe (qua `wpa_supplicant`, hệ điều hành) | Lên WiFi WPA2-Enterprise |
+| `app_users` (role `admin`) | Giám khảo/marshal, đăng nhập web | Mở/kết thúc/hủy lượt, bấm "Bắt đầu ghi log" |
+| `teams.car_api_key` | Chương trình `carlogd` trên xe (không phải người) | Tự hỏi web "lượt của đội tôi đã duyệt bắt đầu chưa" qua `GET /api/teams/{id}/car-status` — **chỉ đọc được đúng đội mình**, dù bị lộ cũng không xem được dữ liệu đội khác |
+
+Sinh `car_api_key` bằng nút **"Sinh chìa khoá xe"** trong Admin Console (web),
+không cần biết SQL — xem chi tiết ở tài liệu triển khai bên dưới.
+
+## Bắt đầu từ đâu
+
+1. **Lắp ráp/cấu hình 1 xe**: [`pi-daemon/provision/README.md`](pi-daemon/provision/README.md)
+   (tách user Linux, cài `carlogd` làm systemd service, WiFi Enterprise, NTP).
+2. **Đưa cho thí sinh**: chỉ thư mục [`pi-daemon/sdk/`](pi-daemon/sdk) — xem
+   `sdk/README.md`.
+3. **Test không cần Pi/mạng thi đấu thật**: `pi-daemon/test/run_local_test.py`
+   (xem [`pi-daemon/README.md`](pi-daemon/README.md) mục "Bắt đầu từ đâu").
+4. **Triển khai toàn bộ hệ thống (DB → backend → FreeRADIUS → router → Pi →
+   carlogd → chạy thật)**: [`HUONG_DAN_TRIEN_KHAI_A_DEN_Z.md`](HUONG_DAN_TRIEN_KHAI_A_DEN_Z.md)
+   — làm theo đúng thứ tự, không bỏ bước.
+
+## Vì sao công bằng dù thí sinh có full SSH trên Pi
+
+Chặn bằng **quyền hệ điều hành**, không phải quy định miệng — chi tiết ở
+[`pi-daemon/README.md`](pi-daemon/README.md): thí sinh không đổi được `team_id`,
+không tự mở/đóng được lượt chạy, không sửa được `sequence_no`/nhịp gửi, không
+giả được `car_timestamp`, và `car_api_key` (nếu có dùng) chỉ đọc được đúng
+trạng thái đội mình.
+
+---
+
+## Phụ lục — Tài liệu tham khảo bản ESP32/FreeRTOS cũ
+
+> Nội dung dưới đây (`main/`, `test/`, `wokwi/` ở cấp trên repo) là bản làm
+> cho **ESP32/FreeRTOS** trước khi biết rõ yêu cầu thật của cuộc thi (lúc đó
+> chưa biết xe dùng Raspberry Pi). Giữ lại **chỉ để tham khảo** — phòng
+> trường hợp có đội tự muốn gắn thêm 1 module ESP32 phụ (ví dụ cảm biến rời)
+> — **không phải kiến trúc chính thức**, không dùng để triển khai cuộc thi
+> thật. Đọc [`pi-daemon/README.md`](pi-daemon/README.md) cho kiến trúc đang
+> dùng thật.
+
+### 1. Vì sao chọn C/C++ trên ESP-IDF (FreeRTOS), không phải Python/Node/Arduino thuần
 
 | Yêu cầu thực tế | Vì sao cần | Hệ quả cho lựa chọn ngôn ngữ |
-|---|---|---|
+| --- | --- | --- |
 | Gửi đúng nhịp **10ms** (100Hz), sai lệch càng nhỏ càng công bằng | `StatsService.runStats()` tính "gói mất" từ `max(seq)-min(seq)+1-count`, và tần suất gói ảnh hưởng trực tiếp tới độ mượt của dashboard live | Cần vòng lặp **thời gian thực xác định** — không có GC dừng bất chợt (loại Python/Node/JVM) làm trôi nhịp gửi |
 | `car_timestamp` phải là **giờ tường thực** đã đồng bộ NTP, vì `received_at - car_timestamp` = độ trễ mạng hiển thị cho giám khảo | `init_basic_int.txt` ghi rõ: "hiệu số ÂM nghĩa là đồng hồ xe chưa đồng bộ NTP" | Cần SNTP client chuẩn, chạy sớm trước khi gửi gói đầu tiên |
 | Xe xác thực WiFi bằng **WPA2-Enterprise (PEAP/MSCHAPv2)** qua FreeRADIUS đọc thẳng từ bảng `teams` | README backend + báo cáo triển khai RADIUS đã chốt kiến trúc này | ESP-IDF có `esp_eap_client` hỗ trợ PEAP/MSCHAPv2 **có sẵn, native** — không phải tự cài thư viện |
@@ -32,7 +79,7 @@ mà `car_simulator.py` gốc từng đo bằng `late_count_gt2ms`). Nếu đội
 kiến trúc/luồng dưới đây vẫn áp dụng được, chỉ thay lớp WiFi/socket bằng API Arduino
 tương ứng.
 
-## 2. Cấu trúc
+### 2. Cấu trúc
 
 ```
 main/
@@ -49,7 +96,7 @@ main/
 sdkconfig.defaults          CONFIG_FREERTOS_HZ=1000 (tick 1ms) — bắt buộc để nhịp 10ms chính xác
 ```
 
-## 3. Vòng đời một lượt chạy (run)
+### 3. Vòng đời một lượt chạy (run)
 
 1. Xe cấp nguồn → nạp danh tính từ NVS (`car_config_load`) → kết nối WiFi Enterprise
    bằng đúng `username` khớp với dòng trong bảng `teams` (mật khẩu = mật khẩu gốc dùng
@@ -61,7 +108,7 @@ sdkconfig.defaults          CONFIG_FREERTOS_HZ=1000 (tick 1ms) — bắt buộc 
    `ingest_server.py`): thà gửi log với đồng hồ hơi lệch còn hơn xe đứng im giữa cuộc thi.
    Ban tổ chức nên chạy một NTP server nội bộ trên mạng thi đấu (không phụ thuộc Internet).
 3. Trọng tài mở lượt chạy trên trang quản trị (`POST /api/runs`) → có `run_id` → gõ lệnh
-   `startrun <run_id>` qua console UART của xe (xem mục 4) → `run_session` kích hoạt.
+   `startrun <run_id>` qua console UART của xe (xem mục 7) → `run_session` kích hoạt.
 4. `telemetry_task` bắt đầu vòng lặp 10ms: gọi `ai_perception_read()` (đội tự cắm AI thật
    vào đây), lấy số thứ tự kế tiếp từ `fairness_guard`, đóng gói, gửi UDP tới
    `ingest_server.py`.
@@ -71,7 +118,7 @@ sdkconfig.defaults          CONFIG_FREERTOS_HZ=1000 (tick 1ms) — bắt buộc 
    `started_at`/`ended_at` của run, không dựa trên gói cuối cùng. Vẫn nên gõ `stoprun`
    trên xe ngay khi có hiệu lệnh dừng để không tốn băng thông/pin.
 
-## 4. Vì sao `run_id` được nhập tay qua console, không tự dò qua REST
+### 4. Vì sao `run_id` được nhập tay qua console, không tự dò qua REST
 
 Đã cân nhắc phương án xe tự gọi `GET /api/teams/{id}/runs` để tự phát hiện run đang
 `running`. Bỏ phương án đó vì: (1) mọi endpoint trừ `/api/auth/login` đều cần JWT — muốn
@@ -84,10 +131,11 @@ không phụ thuộc topology mạng, và khớp với việc trọng tài vốn
 để mở run — chỉ thêm một thao tác gõ lệnh tại chỗ.
 
 Nếu ban tổ chức muốn tự động hoá, có thể thay `run_session.c` bằng bản gọi REST, dùng
-một tài khoản `app_users` role viewer **riêng cho xe** (khác tài khoản viewer của màn
-hình giám khảo) để có thể thu hồi độc lập — không đổi bất cứ gì ở `telemetry_task`/`fairness_guard`.
+đúng cơ chế `car_api_key` (không dùng JWT admin/viewer chung) mà `pi-daemon` bản
+Raspberry Pi thật đang dùng — xem `pi-daemon/README.md` — không đổi bất cứ gì ở
+`telemetry_task`/`fairness_guard`.
 
-## 5. Các cơ chế đảm bảo CÔNG BẰNG (fairness_guard.c)
+### 5. Các cơ chế đảm bảo CÔNG BẰNG (fairness_guard.c)
 
 Mọi đội chạy chung một bản firmware (chỉ khác `car_config` nạp riêng từng xe), nên các
 ràng buộc dưới đây áp dụng như nhau cho tất cả:
@@ -117,7 +165,7 @@ ràng buộc dưới đây áp dụng như nhau cho tất cả:
   tính ra ở `logs.car_timestamp` sẽ sai một cách hệ thống và có thể khiến một đội trông
   "mạng tệ hơn" hoặc "tốt hơn" thực tế trên bảng theo dõi.
 
-## 6. Nơi đội cắm AI thật vào (`ai_perception.h`)
+### 6. Nơi đội cắm AI thật vào (`ai_perception.h`)
 
 File này **chỉ là hợp đồng interface**, không đoán thay phần cứng cảm biến/thuật toán dò
 làn — mỗi đội một cấu hình camera/IR khác nhau. Yêu cầu bắt buộc để không phá nhịp 10ms:
@@ -137,7 +185,7 @@ Các trường `ai_result` gửi đi khớp với `car_simulator.py._fake_ai_res
 trống — đúng thiết kế ghi trong `car_simulator.py`):
 
 | field | kiểu | ý nghĩa |
-|---|---|---|
+| --- | --- | --- |
 | `speed_kmh` | float | tốc độ ước lượng |
 | `steering_deg` | float | góc lái, âm/dương = trái/phải |
 | `lane_offset_cm` | float | lệch khỏi tim làn, âm/dương = trái/phải |
@@ -145,7 +193,7 @@ trống — đúng thiết kế ghi trong `car_simulator.py`):
 | `confidence` | float 0..1 | độ tin cậy của khung suy luận này |
 | `progress` | float 0..1, **tuỳ chọn** | % quãng đường/mê cung đã hoàn thành nếu đội có cách đo (đếm checkpoint...); để trống nếu không có — dashboard mặc định coi là 0, không bắt buộc |
 
-## 7. Build & nạp firmware
+### 7. Build & nạp firmware
 
 ```bash
 idf.py set-target esp32
@@ -167,13 +215,13 @@ stoprun
 mất khi mất điện). `<mat_khau_wifi>` là mật khẩu gốc dùng để `NtHashGen` sinh `nt_hash`
 lưu trong bảng `teams` — PHẢI khớp, vì PEAP xác thực bằng mật khẩu gốc chứ không phải hash.
 
-## 8. Test KHÔNG cần chip ESP32 thật
+### 8. Test KHÔNG cần chip ESP32 thật
 
 Không có trang web nào "dán code ESP-IDF vào là chạy giả lập nguyên con xe" — WiFi
 WPA2-Enterprise thật và stack mạng thật của chip không mô phỏng được trên web. Có
 2 cách test thực tế, cả hai đều dùng ĐÚNG code trong `main/` (không viết lại logic):
 
-### 8.1. Test logic/giao thức trên máy tính (`test/`) — khuyên dùng trước tiên
+#### 8.1. Test logic/giao thức trên máy tính (`test/`) — khuyên dùng trước tiên
 
 Biên dịch thẳng `fairness_guard.c` và `telemetry_protocol.c` (file gốc, không sửa)
 thành một chương trình chạy trên PC, dùng vài "shim" thay cho API của ESP-IDF
@@ -198,17 +246,22 @@ sẵn `gcc`. Cài **một lần duy nhất**, sau đó dùng PowerShell bình th
 1. Cài MSYS2 (chỉ 1 lần): `winget install -e --id MSYS2.MSYS2`
 2. Mở **"MSYS2 UCRT64"** từ Start Menu — CHỈ để cài gói compiler, xong thì đóng cửa
    sổ này luôn, không cần mở lại nữa:
+
    ```bash
    pacman -S --needed mingw-w64-ucrt-x86_64-gcc
    ```
+
 3. Thêm `C:\msys64\ucrt64\bin` vào PATH của Windows để PowerShell tìm thấy `gcc.exe`:
    mở PowerShell (không cần quyền admin) và chạy:
+
    ```powershell
    [Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\msys64\ucrt64\bin", "User")
    ```
+
    rồi **đóng và mở lại PowerShell** để PATH mới có hiệu lực (kiểm tra bằng `gcc --version`).
 4. Từ giờ về sau, chỉ cần PowerShell bình thường, không cần `make` (Windows không có
    sẵn, khỏi cài thêm) — biên dịch thẳng bằng 1 lệnh `gcc`:
+
    ```powershell
    cd D:\Hackathon\hackathon-chip-logic\test
    gcc -Wall -O2 -std=gnu11 -I../main -Ishim -Ivendor -o native_sim.exe native_sim.c ../main/fairness_guard.c ../main/telemetry_protocol.c shim/nvs_shim.c vendor/cJSON.c -lm -lws2_32
@@ -242,7 +295,7 @@ Muốn test full pipeline (kể cả ghi DB + hiện lên dashboard thật), ch�
 Car/simulator/ingest_server.py --port 9999`) rồi mở `hackathon-frontend` lên xem —
 `native_sim` đóng vai trò y hệt `car_simulator.py` nhưng chạy code C thật của chip.
 
-### 8.2. Xem trực quan bằng Wokwi (mô phỏng bo mạch ESP32 trong VS Code)
+#### 8.2. Xem trực quan bằng Wokwi (mô phỏng bo mạch ESP32 trong VS Code)
 
 [Wokwi](https://wokwi.com) mô phỏng được phần cứng ESP32 và chạy được firmware ESP-IDF
 thật (không phải chỉ Arduino), nhưng WiFi ảo của Wokwi **không hỗ trợ WPA2-Enterprise
