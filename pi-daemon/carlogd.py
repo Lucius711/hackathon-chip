@@ -82,30 +82,82 @@ STATE = SharedState()
 #     chinh la muc dich: thi sinh viet ngon ngu gi cung goi duoc).
 # ---------------------------------------------------------------------------
 REQUIRED_AI_FIELDS = {"speed_kmh", "steering_deg", "lane_offset_cm", "obstacle", "confidence"}
+_TRUE_STRINGS = {"true", "1", "yes", "on"}
+_FALSE_STRINGS = {"false", "0", "no", "off"}
+
+
+def _coerce_obstacle(value):
+    """Chap nhan bool that (JSON true/false) hoac string "true"/"false" - MOT
+    SO ngon ngu/thu vien JSON cua thi sinh (script tu viet, hoac ep kieu tay)
+    co the serialize boolean thanh chuoi. KHONG duoc dung bool(value) truc
+    tiep: bool("false") == True trong Python vi chuoi khong rong la truthy -
+    day tung la 1 bug (obstacle=False bi ghi nham thanh True khi gui duoi
+    dang chuoi)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in _TRUE_STRINGS:
+            return True
+        if low in _FALSE_STRINGS:
+            return False
+        raise ValueError(f"gia tri obstacle khong hop le: {value!r}")
+    if isinstance(value, (int, float)):
+        return bool(value)
+    raise ValueError(f"kieu du lieu obstacle khong ho tro: {type(value).__name__}")
+
+
+def _coerce_ai_payload(obj):
+    """Chuyen doi + kiem tra KIEU du lieu cho 5 truong bat buoc (+ progress
+    tuy chon). Nem TypeError/ValueError neu thi sinh gui sai KIEU (vd chuoi
+    khong phai so, null, list...) de ai_submit_server() bat va bo qua dung
+    GOI DO - khong duoc de loi nay thoat ra ngoai va lam chet thread nhan UDP
+    (bug cu: float("abc") hoac float(None) raise exception khong ai bat, lam
+    thread nay chet vinh vien - carlogd van bao "active" nhung tu do KHONG
+    con nhan duoc ket qua AI moi nao nua cho ca luot chay)."""
+    result = {
+        "speed_kmh": float(obj["speed_kmh"]),
+        "steering_deg": float(obj["steering_deg"]),
+        "lane_offset_cm": float(obj["lane_offset_cm"]),
+        "obstacle": _coerce_obstacle(obj["obstacle"]),
+        "confidence": float(obj["confidence"]),
+    }
+    if isinstance(obj.get("progress"), (int, float)):
+        result["progress"] = float(obj["progress"])
+    return result
 
 
 def ai_submit_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("127.0.0.1", config.LOCAL_SUBMIT_PORT))
     print(f"[carlogd] dang nhan ket qua AI tu thi sinh tai 127.0.0.1:{config.LOCAL_SUBMIT_PORT}")
+    bad_count = 0
+    last_warn = time.monotonic()
     while True:
         raw, _ = sock.recvfrom(65535)
         try:
             obj = json.loads(raw.decode("utf-8"))
         except Exception:
             continue  # JSON thi sinh gui sai dinh dang - lang le bo qua, khong lam sap dich vu
-        if not REQUIRED_AI_FIELDS.issubset(obj.keys()):
-            continue  # thieu truong bat buoc - bo qua, giu ban cu (an toan hon la dung gia tri thieu)
+        if not isinstance(obj, dict) or not REQUIRED_AI_FIELDS.issubset(obj.keys()):
+            continue  # thieu truong bat buoc (hoac khong phai object JSON) - bo qua, giu ban cu
+        try:
+            parsed = _coerce_ai_payload(obj)
+        except (TypeError, ValueError):
+            # Du co du 5 truong nhung SAI KIEU (vd "speed_kmh": "abc" hoac
+            # null) - bo qua dung goi nay, giu nguyen ban cu, KHONG lam chet
+            # thread (xem docstring _coerce_ai_payload).
+            bad_count += 1
+            now = time.monotonic()
+            if now - last_warn >= 5.0:
+                print(f"[carlogd] CANH BAO: {bad_count} goi AI sai kieu du lieu tu thi sinh "
+                      f"bi bo qua tu lan canh bao truoc (kiem tra lai code doi ban) - vi du "
+                      f"goi vua roi: {raw[:200]!r}", file=sys.stderr)
+                last_warn = now
+                bad_count = 0
+            continue
         with STATE.lock:
-            STATE.latest_ai = {
-                "speed_kmh": float(obj.get("speed_kmh", 0.0)),
-                "steering_deg": float(obj.get("steering_deg", 0.0)),
-                "lane_offset_cm": float(obj.get("lane_offset_cm", 0.0)),
-                "obstacle": bool(obj.get("obstacle", True)),
-                "confidence": float(obj.get("confidence", 0.0)),
-            }
-            if isinstance(obj.get("progress"), (int, float)):
-                STATE.latest_ai["progress"] = float(obj["progress"])
+            STATE.latest_ai = parsed
 
 
 # ---------------------------------------------------------------------------

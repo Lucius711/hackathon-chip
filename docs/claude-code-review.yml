@@ -1,0 +1,215 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - "pi-daemon/**/*.py"
+      - "pi-daemon/**/*.md"
+      - "pi-daemon/**/*.service"
+      - "pi-daemon/**/*.conf"
+      - "README.md"
+      - "HUONG_DAN_TRIEN_KHAI_A_DEN_Z.md"
+      - "!main/**"
+      - "!test/**"
+      - "!wokwi/**"
+
+# Kiến trúc 2 tầng cho chất lượng review cao nhất:
+#   Tầng 1 (find): 3 reviewer song song, mỗi lăng kính chuyên sâu → GHI findings ra artifact (KHÔNG post).
+#   Tầng 2 (synthesize): 1 job đọc cả 3, XÁC MINH lại với code, khử trùng lặp, xếp severity → post 1 review DUY NHẤT.
+# Diversity (3 lăng kính) + verification (tầng 2) = phủ rộng hơn 1 pass mà ít false-positive hơn.
+#
+# Repo này là daemon Python trên Raspberry Pi cho 1 cuộc thi đua xe (không
+# phải backend NestJS+Drizzle) - KHÔNG có specs_dev/ hay .claude/rules/.
+# Nguồn convention chuẩn: README.md, pi-daemon/README.md,
+# pi-daemon/provision/README.md, HUONG_DAN_TRIEN_KHAI_A_DEN_Z.md, và
+# .claude/review-guide.md (bất biến cốt lõi + bug đã xảy ra thật trong repo).
+jobs:
+  # ───────────────────────── TẦNG 1: 3 lăng kính tìm bug (ghi file, không post) ─────────────────────────
+  find:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: correctness
+            lens: "Correctness & Robustness"
+            focus: |
+              Thread/robustness: MỌI chỗ ép kiểu (float()/int()/index dict obj["..."]) trên dữ liệu THÍ SINH
+                gửi qua UDP (ai_submit_server) phải nằm trong try/except - 1 exception lọt ra ngoài sẽ lam CHET
+                VINH VIEN thread nhan UDP (service van bao "active" nhung ngung nhan du lieu AI - bug that da
+                tung xay ra, xem .claude/review-guide.md).
+              + bool(value) sai voi du lieu boolean dang chuoi ("false" -> truthy).
+              + Truy cap SharedState (run_id/team_id/next_seq/latest_ai) khong qua STATE.lock -> race condition
+                giua 3 thread (control_server, api_poll_loop, sender_loop).
+              + Ghi STATE_FILE khong theo pattern ghi-file-tam-roi-os.replace() (mat tinh atomic).
+              + Goi mang moi (urllib.request...) thieu timeout=, hoac bat ky I/O blocking khong gioi han thoi
+                gian nao bi chen vao sender_loop() (vong lap 10ms) -> lam troi nhip gui.
+              + Bug logic thuan: null/None deref, off-by-one trong sequence_no, sai dieu kien start/stop,
+                doi API cua carlogctl.py/carlogd.py ma khong sua dong bo ca 2 phia.
+          - key: security
+            lens: "Security & Fairness"
+            focus: |
+              Day la BAT BIEN QUAN TRONG NHAT cua du an - moi vi pham deu la CAO (xem .claude/review-guide.md
+              muc "Bat bien cot loi"):
+              - Code moi cho phep du lieu tu ai_submit_server (UDP thi sinh) ghi de/anh huong toi 4 truong
+                run_id/team_id/sequence_no/car_timestamp - CHI duoc set trong _start_run_locked()/sender_loop().
+              - Thay doi permission/mode cua CONTROL_SOCKET (phai la 0660 + group carlog) hoac them duong tat
+                cho phep user khac (ngoai group carlog) goi duoc START/STOP.
+              - Dung tai khoan JWT admin/viewer (dang nhap web) o bat ky dau trong carlogd thay vi header
+                X-Car-Api-Key qua /api/teams/{id}/car-status (co che cu _api_login/_api_get_team_runs KHONG
+                duoc goi lai - da bi loai vi lo du lieu cheo doi).
+              - Thu muc/file moi tao duoi /opt/carlogd, /var/lib/carlogd thieu chmod chat (750 tro xuong).
+              - Log secret (car_api_key, mat khau WiFi, nt_hash) ra stdout/stderr/state file duoi dang doc duoc.
+              - Bo/noi long co che fairness: sequence_no khong con lien tuc/khong lap, hoac carlogd gui goi khi
+                chua co run_id hop le (truoc day suppress bang "continue" trong sender_loop).
+          - key: convention
+            lens: "Convention & Docs"
+            focus: |
+              Repo KHONG co specs_dev/.claude/rules - nguon convention la README.md, pi-daemon/README.md,
+              pi-daemon/provision/README.md, HUONG_DAN_TRIEN_KHAI_A_DEN_Z.md, va .claude/review-guide.md.
+              - Doi ten bien moi truong (CARLOGD_*), port mac dinh, duong dan file, hoac buoc cai dat trong code
+                ma KHONG cap nhat dung cho tuong ung trong 4 file tai lieu tren -> FLAG (bai hoc that: tung
+                thieu chmod 750 trong huong dan A-Z du co trong provision/README.md).
+              - except Exception: pass/continue MOI them ma khong co comment giai thich ly do "im lang bo qua la
+                AN TOAN HON" - phong cach repo luon giai thich ro (xem carlogd.py lam mau).
+              - Code moi chi chay tren Linux (gia dinh co AF_UNIX...) ma khong co nhanh fallback Windows
+                demo/dev - tru khi ro rang CHI danh cho trien khai that tren Pi (khong phai script demo).
+              - Doi format goi JSON gui len ingest_server.py ma khong doi chieu lai voi protocol.py that (carlogd
+                PHAI import thang, khong duoc tu viet lai schema).
+              - Test moi trong pi-daemon/test/ khong dung dung protocol.decode()/protocol.encode() that ma tu
+                doan lai schema rieng.
+    permissions:
+      contents: read
+      pull-requests: read # chỉ đọc PR/diff — KHÔNG post (chỉ tầng synthesize mới write)
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Bạn là 1 trong 3 reviewer SONG SONG cho daemon Python trên Raspberry Pi (hệ thống telemetry cho 1
+            cuộc thi đua xe - KHÔNG phải backend NestJS/Drizzle). Lăng kính của BẠN: "${{ matrix.lens }}".
+            Nhánh PR đã được checkout sẵn.
+            ĐỌC TRƯỚC: `.claude/review-guide.md` (bất biến cốt lõi + bug thật đã từng xảy ra trong repo này),
+            và các file convention gốc: `README.md`, `pi-daemon/README.md`, `pi-daemon/provision/README.md`,
+            `HUONG_DAN_TRIEN_KHAI_A_DEN_Z.md`. Repo KHÔNG có specs_dev/.claude/rules - đừng tìm chúng.
+
+            ⚠️ QUAN TRỌNG: BẠN KHÔNG POST GÌ LÊN GITHUB. Nhiệm vụ của bạn là TÌM và GHI findings.
+            Dùng tool Write ghi TOÀN BỘ phát hiện vào file `pr-findings.md` ở thư mục gốc repo.
+
+            ⚠️ NGÔN NGỮ: nội dung tiếng VIỆT, giữ nguyên tên biến/hàm/file + thuật ngữ kỹ thuật.
+
+            CHỈ soi lăng kính của bạn (2 lens kia có reviewer riêng):
+            ${{ matrix.focus }}
+
+            PHẠM VI:
+            - CHỈ báo vấn đề PR NÀY gây ra hoặc bỏ sót (kể cả dòng NGOÀI diff do rename/xoá symbol/biến môi trường).
+            - Thư mục `main/`, `test/`, `wokwi/` ở cấp gốc (nếu có) là bản ESP32/FreeRTOS cũ, README tự nhận
+              "không phải kiến trúc chính thức" - KHÔNG áp bất biến của `pi-daemon/` vào đó, chỉ báo nếu PR
+              chủ động sửa những file đó.
+            - CĂN CỨ mỗi finding vào `.claude/review-guide.md` hoặc 1 trong 4 file tài liệu gốc, hoặc là bug
+              logic thuần (đọc kỹ code, dựng được kịch bản lỗi cụ thể). Không có căn cứ → không phải finding.
+
+            QUY TRÌNH (bắt buộc):
+            1. Lượt 1 — `gh pr diff`, tách logic thật khỏi rename/format noise.
+            2. Lượt 2 — impact NGOÀI diff: `rg` toàn repo các nơi còn tham chiếu tên biến môi trường/hàm/field
+               CŨ (đặc biệt các file `.md` hướng dẫn - dự án này đã từng bị lệch tài liệu-code thật).
+            3. Tự soát: còn gì trong lăng kính của mình chưa quét? Nếu còn → quét nốt.
+
+            ĐỊNH DẠNG FILE `pr-findings.md` (Write) — theo đúng mẫu để tầng synthesis đọc được:
+            ```
+            # Lens: ${{ matrix.lens }}
+
+            ## [CAO|TRUNG|THẤP] path/to/file.py:123
+            Mô tả ngắn gọn vấn đề + tại sao là bug. Với CAO: kèm KỊCH BẢN LỖI cụ thể (input/trạng thái → kết quả sai).
+            Căn cứ: .claude/review-guide.md | README.md/pi-daemon/README.md/... | logic (bug thuần).
+            Đề xuất: cách sửa.
+
+            ## [CAO|TRUNG|THẤP] path/khac.py:45
+            ...
+            ```
+            Nếu KHÔNG tìm thấy vấn đề nào thuộc lăng kính này, vẫn Write file với đúng nội dung:
+            `# Lens: ${{ matrix.lens }}` xuống dòng `Không có finding.`
+
+          claude_args: |
+            --model claude-opus-4-8
+            --allowedTools "Write,Read,Grep,Glob,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git diff:*),Bash(git log:*),Bash(rg:*),Bash(grep:*),Bash(cat:*),Bash(ls:*),Bash(find:*),Bash(head:*),Bash(tail:*),Bash(wc:*)"
+
+      - name: Upload findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: findings-${{ matrix.key }}
+          path: pr-findings.md
+          if-no-files-found: warn
+
+  # ───────────────────────── TẦNG 2: tổng hợp + xác minh + post 1 review ─────────────────────────
+  synthesize:
+    needs: find
+    if: always() # vẫn tổng hợp kể cả 1 lens lỗi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all findings
+        uses: actions/download-artifact@v4
+        with:
+          pattern: findings-*
+          path: _findings
+        # → _findings/findings-correctness/pr-findings.md, _findings/findings-security/..., ...
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Bạn là REVIEWER TỔNG HỢP cho daemon Python trên Raspberry Pi (hệ thống telemetry cho 1 cuộc thi đua
+            xe). 3 reviewer song song đã ghi findings vào các file `_findings/**/pr-findings.md` (đọc HẾT chúng
+            bằng Read/rg trước). Nhánh PR đã checkout sẵn.
+            ĐỌC conventions: `.claude/review-guide.md` (bất biến cốt lõi + bug thật đã từng xảy ra), và
+            `README.md`, `pi-daemon/README.md`, `pi-daemon/provision/README.md`,
+            `HUONG_DAN_TRIEN_KHAI_A_DEN_Z.md`. Repo KHÔNG có specs_dev/.claude/rules - đừng tìm chúng.
+
+            ⚠️ NGÔN NGỮ: mọi thứ post lên GitHub bằng TIẾNG VIỆT, giữ nguyên thuật ngữ/tên kỹ thuật.
+
+            NHIỆM VỤ (KHÔNG review lại từ đầu — tổng hợp + XÁC MINH là chính):
+            1. Gom findings từ cả 3 lens.
+            2. XÁC MINH từng finding với CODE THẬT (mở file, kiểm dòng). LOẠI:
+               - false-positive: pattern legacy ở code KHÔNG đổi; finding nhắm vào `main/`/`test/`/`wokwi/`
+                 (bản ESP32 cũ, không áp bất biến của `pi-daemon/`) trừ khi PR chủ động sửa đúng những file đó.
+               - finding chỉ là ý kiến chung, KHÔNG có căn cứ `.claude/review-guide.md`/tài liệu gốc hoặc bug thật.
+               Đừng tin mù reviewer tầng 1.
+            3. Khử TRÙNG LẶP (nhiều lens báo 1 chỗ → gộp 1).
+            4. Xếp severity. Mỗi **CAO** phải dựng được KỊCH BẢN LỖI CỤ THỂ (input/trạng thái → kết quả sai);
+               không dựng được → hạ TRUNG hoặc loại. Vi phạm "Bất biến cốt lõi" trong review-guide.md (4 trường
+               run_id/team_id/sequence_no/car_timestamp, quyền socket 0660, chmod thư mục carlogd, không dùng
+               JWT thay car_api_key) luôn xếp CAO nếu xác minh đúng là có xảy ra.
+
+            CÁCH POST (chỉ GitHub comment mới hiện) — post 1 review DUY NHẤT:
+            - CHỈ post finding **CAO + TRUNG**. THẤP (code smell, naming, gợi ý nhỏ): KHÔNG liệt kê.
+            - Mỗi finding kèm 1 dòng "Căn cứ: <.claude/review-guide.md | README.md/... | logic>".
+            - Gắn dòng trong diff → `mcp__github_inline_comment__create_inline_comment` (confirmed: true).
+              Dòng NGOÀI hunk → đưa vào comment tổng, ghi rõ file:line.
+            - 1 comment tổng `gh pr comment`, mở đầu "## 🤖 Review tổng hợp", liệt kê CAO→TRUNG;
+              cuối comment 1 dòng minh bạch: "đã loại N false-positive, bỏ qua M ghi chú THẤP".
+            - Nếu sau xác minh KHÔNG còn CAO/TRUNG: 1 comment "## 🤖 Review tổng hợp — LGTM" ngắn gọn.
+
+          claude_args: |
+            --model claude-opus-4-8
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git diff:*),Bash(git log:*),Bash(rg:*),Bash(grep:*),Bash(cat:*),Bash(ls:*),Bash(find:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Read,Grep,Glob"

@@ -61,6 +61,13 @@ không phải chỉ "quy định miệng":
    python3 run_local_test.py --protocol-dir /duong/dan/toi/Car/simulator
    ```
 
+   Test này giờ chèn thêm một loạt gói AI **sai kiểu dữ liệu** (chuỗi thay
+   vì số, `null`, boolean serialize thành chuỗi...) vào giữa luồng, để đảm
+   bảo `carlogd` bỏ qua đúng gói lỗi và **vẫn sống, vẫn nhận gói hợp lệ tiếp
+   theo** — không phải chỉ test đường "happy path". Muốn tự tay thử từng
+   trường hợp lỗi trong khi xem log `carlogd` phản ứng ra sao, chạy
+   `python3 test/send_bad_ai_examples.py` (carlogd phải đang chạy sẵn).
+
 ## Vì sao chọn nhịp "server tự lấy giá trị mới nhất" thay vì bắt thí sinh gửi đúng 10ms
 
 Thí sinh viết code bằng ngôn ngữ/tốc độ suy luận AI khác nhau (camera + CV có

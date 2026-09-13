@@ -194,7 +194,18 @@ sudo cp carlogd.py carlogctl.py config.py /opt/carlogd/
 sudo cp -r hackathon-server/Car /opt/hackathon/Car   # cần protocol.py thật
 sudo chown -R carlog:carlog /opt/carlogd /opt/hackathon
 sudo chmod 750 /opt/carlogd
+```
 
+**Bắt buộc — không được bỏ qua `chmod 750` ở trên.** Chỉ `chown` thôi thì thư
+mục vẫn có quyền mặc định `rwxr-xr-x` (world-readable) — nghĩa là user `pilot`
+(thí sinh, không thuộc group `carlog`) vẫn `cd`/`cat` đọc được toàn bộ
+`carlogd.py`, `carlogctl.py`, và **`config.py` (chứa `CARLOGD_API_KEY` của
+đội)** dù không sửa/xoá được. `chmod 750` (rwx cho `carlog`, r-x cho group
+`carlog`, không quyền gì cho người khác) mới thật sự khớp với cam kết "thí
+sinh không có quyền đọc" ghi trong README chính — thiếu bước này thì lời cam
+kết đó chỉ đúng một nửa (chặn được sửa/tắt, chưa chặn được đọc).
+
+```bash
 sudo nano /opt/carlogd/config.py
 ```
 Sửa trong `config.py`:
@@ -259,4 +270,29 @@ python3 Car/simulator/ingest_server.py --port 9999   # server giả lập
 python3 carlogd.py           # dùng run_carlogd_demo.ps1 trên Windows để tự set biến môi trường
 python3 sdk/send_result_example.py     # gửi 1 gói, giả lập thí sinh
 # hoặc: python3 demo_drive_loop.py     # gửi liên tục, số liệu biến thiên như xe thật
+```
+
+---
+
+## Phụ lục — Kiểm tra carlogd chịu được dữ liệu AI "cẩu thả" từ thí sinh
+
+Thí sinh viết code tự do (Python/C/Node/Go...) nên **chắc chắn** sẽ có đội gửi
+dữ liệu sai kiểu (chuỗi thay vì số, `null` khi chưa kịp gán giá trị, boolean
+serialize thành chuỗi `"false"`...). `carlogd.py` phải bỏ qua đúng gói lỗi đó
+và **tiếp tục nhận các gói hợp lệ sau đó** — không được để 1 gói lỗi làm dịch
+vụ ngừng nhận dữ liệu AI cho cả trận (dù `systemctl status` vẫn báo
+`active`). Test tự động việc này (không cần Pi/mạng thật):
+
+```bash
+cd pi-daemon/test
+python3 run_local_test.py --protocol-dir /duong/dan/toi/Car/simulator
+```
+
+Test này giờ tự chèn một loạt gói sai kiểu vào giữa luồng dữ liệu và kiểm tra
+`carlogd` còn sống + vẫn nhận được gói hợp lệ ngay sau đó mới báo `PASS`.
+Muốn tự tay gửi từng trường hợp lỗi để xem log `carlogd` phản ứng thế nào,
+chạy `carlogd.py` thật (vd qua `run_carlogd_demo.ps1`) rồi ở cửa sổ khác:
+
+```bash
+python3 pi-daemon/test/send_bad_ai_examples.py
 ```

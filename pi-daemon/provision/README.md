@@ -29,7 +29,14 @@ sudo cp carlogd.py carlogctl.py config.py /opt/carlogd/
 # thu muc Car/ tu repo (hoac chi can protocol.py) vao day:
 sudo cp -r /path/to/hackathon-server/Car /opt/hackathon/Car
 sudo chown -R carlog:carlog /opt/carlogd /opt/hackathon
+sudo chmod 750 /opt/carlogd
 ```
+
+**`chmod 750` là bước bắt buộc, không phải tuỳ chọn** — chỉ `chown` thì thư
+mục vẫn ở quyền mặc định `rwxr-xr-x`, nghĩa là `pilot` (thí sinh) tuy không
+sửa/xoá được nhưng vẫn **đọc được** `carlogd.py`/`config.py` (kể cả
+`CARLOGD_API_KEY`). `chmod 750` mới thật sự chặn cả việc đọc, đúng như cam
+kết "thí sinh không có quyền đọc/sửa/tắt" ở README chính.
 
 Sửa `/opt/carlogd/config.py` (hoặc đặt biến môi trường trong service file) —
 ít nhất `CARLOGD_TEAM_ID` (số, trùng `teams.id` của đội) và `CARLOGD_INGEST_HOST`
@@ -98,8 +105,9 @@ Cửa sổ `ingest_server.py` phải thấy `nhan=` tăng lên.
 
 Đề bài cho thí sinh SSH vào chip nghĩa là họ **có shell**, khả năng cao cũng
 có thể đọc được toàn bộ mã nguồn `carlogd.py` nếu không chặn quyền đọc thư
-mục `/opt/carlogd` (đã `chown carlog:carlog`, thí sinh không có quyền ghi/đọc
-nếu không cùng group — cân nhắc `chmod 750 /opt/carlogd` nếu muốn chặn cả đọc).
+mục `/opt/carlogd` — đây chính là lý do bước `chmod 750 /opt/carlogd` ở mục 2
+là bắt buộc (chỉ `chown carlog:carlog` không đủ, mặc định thư mục vẫn
+world-readable).
 Việc tách quyền ở tầng hệ điều hành (không phải "quy định miệng: đừng đụng
 vào") là hàng rào kỹ thuật thật sự tương đương vai trò `fairness_guard.c` bên
 bản ESP32 trước đó — chỉ khác là ở đây hàng rào nằm ở quyền file Linux thay

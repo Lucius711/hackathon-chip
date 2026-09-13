@@ -82,8 +82,39 @@ def main():
     # --- 4) gia lap thi sinh: gui khong deu nhip (30ms, cham hon 10ms that) ---
     submit_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     t_end = time.time() + args.duration
+    t_mid = time.time() + args.duration / 2.0
     i = 0
+    sent_bad_burst = False
+    RECOVERY_MARKER_SPEED = 999.0  # gia tri "khong the nham lan" de kiem tra carlogd
+    # con song (van xu ly duoc goi hop le) SAU khi nhan mot loat goi sai kieu.
     while time.time() < t_end:
+        if not sent_bad_burst and time.time() >= t_mid:
+            # --- 4b) chen 1 loat goi "cau tha" (sai kieu du lieu, KHONG phai
+            # sai JSON/thieu truong - da co du 5 key) giua chung, dung kieu
+            # loi tung lam chet thread nhan UDP cua carlogd truoc bugfix (xem
+            # test/send_bad_ai_examples.py de biet chi tiet tung truong hop):
+            bad_payloads = [
+                {"speed_kmh": "abc", "steering_deg": 0, "lane_offset_cm": 0,
+                 "obstacle": False, "confidence": 0.5},
+                {"speed_kmh": 10, "steering_deg": 0, "lane_offset_cm": 0,
+                 "obstacle": False, "confidence": None},
+                {"speed_kmh": 10, "steering_deg": 0, "lane_offset_cm": 0,
+                 "obstacle": "false", "confidence": 0.5},  # phai duoc hieu la False, khong phai True
+                {"speed_kmh": 10, "steering_deg": [1, 2], "lane_offset_cm": 0,
+                 "obstacle": False, "confidence": 0.5},
+            ]
+            for bp in bad_payloads:
+                submit_sock.sendto(json.dumps(bp).encode(), ("127.0.0.1", local_submit_port))
+                time.sleep(0.03)
+            # Goi "marker" hop le NGAY SAU loat goi rac - neu thread nhan UDP
+            # cua carlogd da chet vi loat goi tren, marker nay se KHONG BAO GIO
+            # toi duoc STATE.latest_ai va se khong xuat hien trong log nhan duoc.
+            marker_payload = {"speed_kmh": RECOVERY_MARKER_SPEED, "steering_deg": 0,
+                               "lane_offset_cm": 0, "obstacle": False, "confidence": 0.5}
+            submit_sock.sendto(json.dumps(marker_payload).encode(), ("127.0.0.1", local_submit_port))
+            sent_bad_burst = True
+            time.sleep(0.03)
+            continue
         payload = {"speed_kmh": 20 + i % 5, "steering_deg": -5.0,
                    "lane_offset_cm": 1.0, "obstacle": False, "confidence": 0.9}
         submit_sock.sendto(json.dumps(payload).encode(), ("127.0.0.1", local_submit_port))
@@ -91,6 +122,7 @@ def main():
         time.sleep(0.03)
 
     time.sleep(0.5)
+    daemon_alive_after_bad_burst = daemon.poll() is None
     subprocess.run([sys.executable, "carlogctl.py", "stop"], cwd=DAEMON_DIR, env=env)
 
     # --- 5) thu goi va doi chieu ---
@@ -124,7 +156,16 @@ def main():
         bad_run = [p for p in seen if p["run_id"] != run_id]
         print(f"team_id sai: {len(bad_team)}, run_id sai: {len(bad_run)}")
         print("mau goi dau:", seen[0])
-        ok = not gaps and not bad_team and not bad_run
+
+        got_recovery_marker = any(
+            abs(p["ai_result"].get("speed_kmh", -1) - RECOVERY_MARKER_SPEED) < 0.01
+            for p in seen)
+        print(f"carlogd con song sau loat goi AI sai kieu: {daemon_alive_after_bad_burst}")
+        print(f"nhan duoc goi hop le NGAY SAU loat goi rac (marker={RECOVERY_MARKER_SPEED}): "
+              f"{got_recovery_marker}")
+
+        ok = (not gaps and not bad_team and not bad_run
+              and daemon_alive_after_bad_burst and got_recovery_marker)
 
     print("\n=> " + ("PASS" if ok else "FAIL"))
 
